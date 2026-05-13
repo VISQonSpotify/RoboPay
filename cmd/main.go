@@ -9,22 +9,29 @@ import (
 	"time"
 
 	"github.com/eclipse-zenoh/zenoh-go/zenoh"
-	"github.com/gin-gonic/gin"
 	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	x402 "github.com/x402-foundation/x402/go"
 	x402http "github.com/x402-foundation/x402/go/http"
 	ginmw "github.com/x402-foundation/x402/go/http/gin"
 	evm "github.com/x402-foundation/x402/go/mechanisms/evm/exact/server"
 	"go.uber.org/zap"
 
+	"github.com/fabricfoundation/robot-tunnel-client/config"
 	"github.com/fabricfoundation/robot-tunnel-client/internal"
 	"github.com/fabricfoundation/robot-tunnel-client/internal/handlers"
 	"github.com/fabricfoundation/robot-tunnel-client/internal/middleware"
 )
 
+const (
+	ProxyWSURL     = "ws://localhost:8080/api/core/ws/robot"
+	FacilitatorURL = "https://x402.org/facilitator"
+)
+
+
 func main() {
-	robotID := flag.String("id", "", "Robot ID (required)")
-	proxyWSURLFlag := flag.String("proxy-ws-url", "", "Proxy WebSocket URL (required)")
+	configPath := flag.String("config", "config.json", "Path to config file")
 	flag.Parse()
 
 	logger, _ := zap.NewProduction()
@@ -34,19 +41,9 @@ func main() {
 		logger.Warn("failed to load .env file", zap.Error(err))
 	}
 
-	if *robotID == "" {
-		*robotID = os.Getenv("ROBOT_ID")
-	}
-	if *robotID == "" {
-		logger.Fatal("robot ID is required: pass -id flag or set ROBOT_ID env var")
-	}
-
-	proxyWSURL := *proxyWSURLFlag
-	if proxyWSURL == "" {
-		proxyWSURL = os.Getenv("PROXY_WS_URL")
-	}
-	if proxyWSURL == "" {
-		logger.Fatal("proxy ws url is required: pass -proxy-ws-url flag or set PROXY_WS_URL env var")
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		logger.Fatal("configuration error", zap.Error(err))
 	}
 
 	session, err := zenoh.Open(zenoh.NewConfigDefault(), nil)
@@ -61,38 +58,27 @@ func main() {
 	router := gin.New()
 	router.Use(zenohEvents)
 
-    router.Use(cors.New(cors.Config{
-        AllowOrigins: []string{"*"},
-        AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-        AllowHeaders: []string{
-            "Origin",
-            "Content-Type",
-            "Authorization",
-            "PAYMENT-SIGNATURE",
-            "Access-Control-Expose-Headers",
+	router.Use(cors.New(cors.Config{
+		AllowOrigins: []string{"*"},
+		AllowMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders: []string{
+			"Origin",
+			"Content-Type",
+			"Authorization",
+			"PAYMENT-SIGNATURE",
+			"Access-Control-Expose-Headers",
 			"payment-signature",
-        },
-        ExposeHeaders: []string{
-            "PAYMENT-REQUIRED",
-            "PAYMENT-RESPONSE",
-        },
-        AllowCredentials: true,
-        MaxAge:           12 * time.Hour,
-    }))
-
-
-	evmAddress := os.Getenv("EVM_PAYEE_ADDRESS")
-	if evmAddress == "" {
-		logger.Fatal("EVM_PAYEE_ADDRESS environment variable is required")
-	}
-
-	facilitatorURL := os.Getenv("FACILITATOR_URL")
-	if facilitatorURL == "" {
-		logger.Fatal("FACILITATOR_URL environment variable is required")
-	}
+		},
+		ExposeHeaders: []string{
+			"PAYMENT-REQUIRED",
+			"PAYMENT-RESPONSE",
+		},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
 
 	facilitatorClient := x402http.NewHTTPFacilitatorClient(&x402http.FacilitatorConfig{
-		URL: facilitatorURL,
+		URL: FacilitatorURL,
 	})
 
 	routes := x402http.RoutesConfig{
@@ -100,12 +86,24 @@ func main() {
 			Accepts: x402http.PaymentOptions{
 				{
 					Scheme:  "exact",
-					Price:   "$0.001",
-					Network: "eip155:84532",
-					PayTo:   evmAddress,
+					Price:   cfg.Price,
+					Network: x402.Network(cfg.Network),
+					PayTo:   cfg.EVMPayeeAddress,
 				},
 			},
 			Description: "Get weather data for a city",
+			MimeType:    "application/json",
+		},
+		"POST /action": {
+			Accepts: x402http.PaymentOptions{
+				{
+					Scheme:  "exact",
+					Price:   cfg.Price,
+					Network: x402.Network(cfg.Network),
+					PayTo:   cfg.EVMPayeeAddress,
+				},
+			},
+			Description: "Run a paid robot action",
 			MimeType:    "application/json",
 		},
 	}
@@ -114,21 +112,23 @@ func main() {
 		Routes:      routes,
 		Facilitator: facilitatorClient,
 		Schemes: []ginmw.SchemeConfig{
-			{Network: "eip155:84532", Server: evm.NewExactEvmScheme()},
+			{Network: x402.Network(cfg.Network), Server: evm.NewExactEvmScheme()},
 		},
 		Timeout: 30 * time.Second,
 	}))
 
-	RegisterAllRoutes(router, *robotID)
+	h := handlers.NewHandlers(zenohPub, logger)
+	RegisterAllRoutes(router, h)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	client := internal.NewClient(proxyWSURL, *robotID, router, logger)
+	client := internal.NewClient(ProxyWSURL, cfg.RobotID, router, logger)
 	client.Run(ctx)
 }
 
 // RegisterAllRoutes registers all real handlers on the router.
-func RegisterAllRoutes(router *gin.Engine, robotID string) {
-	router.GET("/weather", handlers.GetWeather)
+func RegisterAllRoutes(router *gin.Engine, h *handlers.Handlers) {
+	router.GET("/weather", h.GetWeather)
+	router.POST("/action", h.PostAction)
 }
