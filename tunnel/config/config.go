@@ -63,7 +63,7 @@ var (
 
 // chainPresets are the networks selectable via the CHAIN env var. A preset
 // drives both the x402 payment network (CAIP-2) and the AIP registration
-// chain ID; AIP_CHAIN_ID still overrides the latter individually.
+// chain ID.
 var chainPresets = map[string]struct {
 	Network string
 	ChainID int
@@ -137,13 +137,6 @@ func loadAIPConfig(cfg *Config, defaultChainID int) error {
 	cfg.AIPAgentName = getEnvOrDefault("AIP_AGENT_NAME", "Robot "+cfg.RobotID)
 
 	cfg.AIPChainID = defaultChainID
-	if v := os.Getenv("AIP_CHAIN_ID"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("invalid AIP_CHAIN_ID: %q", v)
-		}
-		cfg.AIPChainID = n
-	}
 
 	cfg.AIPLocalPort = DefaultAIPLocalPort
 	if v := os.Getenv("AIP_LOCAL_PORT"); v != "" {

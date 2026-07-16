@@ -128,7 +128,6 @@ cp tunnel/.env.example tunnel/.env
 | `GATEWAY_URL`        | no       | AIP gateway URL (default `https://gateway.aip.unibase.com`) |
 | `AIP_PUBLIC_BASE_URL`| no       | Public gateway base (default `https://api.fabric.foundation/api/core`) |
 | `AIP_AGENT_NAME`     | no       | Display name (default `Robot <robot_id>`)                |
-| `AIP_CHAIN_ID`       | no       | Numeric override for the AIP registration chain (default `97`, or the `CHAIN` preset) |
 | `AIP_LOCAL_PORT`     | no       | Local port the SDK binds (default `8000`)                |
 
 \* One identity source is required: normally `UNIBASE_PROXY_AUTH` (or
