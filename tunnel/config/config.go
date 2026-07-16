@@ -135,8 +135,8 @@ func loadAIPConfig(cfg *Config) error {
 	if !cfg.AIPEnabled {
 		return nil
 	}
-	if cfg.AIPUserID == "" {
-		return fmt.Errorf("AIP_USER_ID is required when AIP_ENABLED is true")
+	if cfg.AIPUserID == "" && cfg.AIPPrivyToken == "" {
+		return fmt.Errorf("UNIBASE_PROXY_AUTH (or AIP_USER_ID) is required when AIP_ENABLED is true")
 	}
 	return nil
 }

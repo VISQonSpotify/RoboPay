@@ -121,14 +121,17 @@ cp tunnel/.env.example tunnel/.env
 | Variable             | Required | Description                                              |
 |----------------------|----------|----------------------------------------------------------|
 | `AIP_ENABLED`        | yes      | Set `true` to enable BitAgent/AIP registration           |
-| `AIP_USER_ID`        | yes      | Wallet address the agent is registered under             |
-| `UNIBASE_PROXY_AUTH` | yes*     | Privy bearer token (falls back to `PRIVY_TOKEN`)         |
+| `UNIBASE_PROXY_AUTH` | yes*     | Privy bearer token — your account is resolved from it (falls back to `PRIVY_TOKEN`) |
+| `AIP_USER_ID`        | no*      | Token-less fallback: wallet address to register under    |
 | `AIP_ENDPOINT`       | no       | AIP platform URL (default `https://api.aip.unibase.com`) |
 | `GATEWAY_URL`        | no       | AIP gateway URL (default `https://gateway.aip.unibase.com`) |
 | `AIP_PUBLIC_BASE_URL`| no       | Public gateway base (default `https://api.fabric.foundation/api/core`) |
 | `AIP_AGENT_NAME`     | no       | Display name (default `Robot <robot_id>`)                |
 | `AIP_CHAIN_ID`       | no       | Chain ID (default `97`)                                  |
 | `AIP_LOCAL_PORT`     | no       | Local port the SDK binds (default `8000`)                |
+
+\* One identity source is required: normally `UNIBASE_PROXY_AUTH` (or
+`PRIVY_TOKEN`); set `AIP_USER_ID` instead only for token-less registration.
 
 Then start the tunnel as usual (`make run`). On success the log shows:
 
