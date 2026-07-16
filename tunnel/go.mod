@@ -9,7 +9,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
-	github.com/unibaseio/aip-go-sdk v0.0.0-20260716181512-a3083c8d3397
+	github.com/unibaseio/aip-go-sdk v0.0.0-20260716200652-bf653eb3651e
 	github.com/x402-foundation/x402/go v0.0.0-20260512144511-7c239c42f5dd
 	go.uber.org/zap v1.28.0
 )
