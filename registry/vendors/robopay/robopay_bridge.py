@@ -21,6 +21,40 @@ SIMULATOR_STATE: Dict[str, Any] = {
     "command": None,
     "last_error": None,
 }
+TERMINAL_SUCCESS_STATES = {"success"}
+TERMINAL_FAILURE_STATES = {"failed", "timeout", "error"}
+MAX_ACTION_DURATION_SECONDS = 10.0
+
+
+def _is_payment_verified(request: Dict[str, Any]) -> bool:
+    return request.get("payment_verified") is True
+
+
+def _compute_settlement(simulator_metrics: Dict[str, Any]) -> bool:
+    terminal_state = str(simulator_metrics.get("terminal_state", "")).lower()
+    if terminal_state in TERMINAL_SUCCESS_STATES:
+        return True
+    if terminal_state in TERMINAL_FAILURE_STATES:
+        return False
+    return str(simulator_metrics.get("execution_state", "")).lower() in TERMINAL_SUCCESS_STATES
+
+
+def _build_result(
+    action_id: str,
+    status: str,
+    execution_time_ms: int,
+    simulator_metrics: Optional[Dict[str, Any]] = None,
+    settled: Optional[bool] = None,
+) -> Dict[str, Any]:
+    if settled is None:
+        settled = _compute_settlement(simulator_metrics or {})
+    return {
+        "actionId": action_id,
+        "status": status,
+        "execution_time_ms": execution_time_ms,
+        "simulator_metrics": simulator_metrics or {},
+        "settled": settled,
+    }
 
 
 def _decode_payload(sample: Any) -> str:
@@ -34,20 +68,16 @@ def _decode_payload(sample: Any) -> str:
     return str(payload)
 
 
-def _build_result(
-    action_id: str,
-    status: str,
-    execution_time_ms: int,
-    simulator_metrics: Optional[Dict[str, Any]] = None,
-    settled: bool = True,
-) -> Dict[str, Any]:
-    return {
-        "actionId": action_id,
-        "status": status,
-        "execution_time_ms": execution_time_ms,
-        "simulator_metrics": simulator_metrics or {},
-        "settled": settled,
-    }
+def _wait_for_terminal_state(state_file: str, timeout_seconds: float) -> Optional[Dict[str, Any]]:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        state = _read_state_file(state_file)
+        if isinstance(state, dict):
+            terminal_state = str(state.get("terminal_state", "")).lower()
+            if terminal_state in TERMINAL_SUCCESS_STATES | TERMINAL_FAILURE_STATES:
+                return state
+        time.sleep(0.2)
+    return None
 
 
 def _normalize_action(request: Any) -> str:
@@ -96,6 +126,7 @@ def _extract_simulator_metrics(controller_state: Optional[Dict[str, Any]] = None
 
     metrics = {
         "execution_state": state.get("execution_state", "idle"),
+        "terminal_state": state.get("terminal_state"),
         "position": {
             "x": float(position.get("x", 0.0)),
             "y": float(position.get("y", 0.0)),
@@ -154,11 +185,26 @@ def _write_state_file(state_file: Optional[str], state: Dict[str, Any]) -> None:
 
 
 def _run_one_shot(request: Dict[str, Any]) -> Dict[str, Any]:
+    if not _is_payment_verified(request):
+        return _build_result(
+            request.get("actionId") or request.get("action_id") or "unknown",
+            "rejected",
+            0,
+            {
+                "skill_id": request.get("skill_id") or request.get("skillId") or "",
+                "payment_verified": False,
+                "reason": "payment not verified by tunnel",
+            },
+            settled=False,
+        )
+
     command = _normalize_action(request)
     sent, simulator_metrics = _send_webots_command(command, request)
+    terminal_success = _compute_settlement(simulator_metrics)
+    status = "completed" if terminal_success else "failed"
     return _build_result(
         request.get("actionId") or request.get("action_id") or "unknown",
-        "completed" if sent else "failed",
+        status,
         0,
         {
             "skill_id": request.get("skill_id") or request.get("skillId") or "",
@@ -173,7 +219,7 @@ def _run_one_shot(request: Dict[str, Any]) -> Dict[str, Any]:
             "last_error": simulator_metrics.get("last_error"),
             "transport": simulator_metrics.get("transport"),
         },
-        settled=True,
+        settled=terminal_success,
     )
 
 
@@ -186,7 +232,8 @@ def _send_webots_command(command: str, request: Dict[str, Any]) -> Tuple[bool, D
         persisted = _read_state_file(state_file)
         if isinstance(persisted, dict):
             state.update(persisted)
-
+    state["terminal_state"] = None
+    state["elapsed"] = 0.0
     position = state.get("position")
     if not isinstance(position, dict):
         position = {"x": 0.0, "y": 0.0, "z": 0.0}
@@ -224,6 +271,9 @@ def _send_webots_command(command: str, request: Dict[str, Any]) -> Tuple[bool, D
 
     if state_file:
         _write_state_file(state_file, payload["state"])
+        final_state = _wait_for_terminal_state(state_file, MAX_ACTION_DURATION_SECONDS + 2)
+        if isinstance(final_state, dict):
+            state.update(final_state)
         state["transport"] = "state-file"
         SIMULATOR_STATE.clear()
         SIMULATOR_STATE.update(state)
@@ -273,6 +323,12 @@ def main() -> None:
     parser.add_argument("--action-id", dest="action_id", default="one-shot")
     parser.add_argument("--skill-id", dest="skill_id", default="")
     parser.add_argument("--payment-proof", dest="payment_proof", default="")
+    parser.add_argument(
+        "--payment-verified",
+        dest="payment_verified",
+        action="store_true",
+        help="Mark the request as verified by the Tunnel (required for settlement).",
+    )
     args = parser.parse_args()
 
     if args.action:
@@ -280,7 +336,8 @@ def main() -> None:
             "actionId": args.action_id,
             "action": args.action,
             "skill_id": args.skill_id,
-            "payment_proof": args.payment_proof or "local-demo",
+            "payment_proof": args.payment_proof,
+            "payment_verified": args.payment_verified,
         }
         response = _run_one_shot(request)
         print(json.dumps(response))
@@ -329,7 +386,7 @@ def main() -> None:
             print(f"[Zenoh] Dropping replayed action request: {action_id}")
             return
 
-        if not payment_proof:
+        if not _is_payment_verified(request):
             response = _build_result(
                 action_id,
                 "rejected",
@@ -337,7 +394,7 @@ def main() -> None:
                 {
                     "skill_id": skill_id,
                     "payment_verified": False,
-                    "reason": "payment_proof missing",
+                    "reason": "payment not verified by tunnel",
                 },
                 settled=False,
             )
@@ -349,9 +406,11 @@ def main() -> None:
         command = _normalize_action(request)
         sent, simulator_metrics = _send_webots_command(command, request)
         execution_time_ms = int((time.perf_counter() - start_time) * 1000)
+        terminal_success = _compute_settlement(simulator_metrics)
+        status = "completed" if terminal_success else "failed"
         response = _build_result(
             action_id,
-            "completed" if sent else "failed",
+            status,
             execution_time_ms,
             {
                 "skill_id": skill_id,
@@ -366,7 +425,7 @@ def main() -> None:
                 "last_error": simulator_metrics.get("last_error"),
                 "transport": simulator_metrics.get("transport"),
             },
-            settled=True,
+            settled=terminal_success,
         )
         publisher.put(json.dumps(response).encode("utf-8"))
         print(f"[TX] {json.dumps(response)}")
